@@ -131,7 +131,8 @@ async def test_empty_search_is_explicit(setup_search):
     target, _, _ = setup_search
     target.rows = []
     result = await advanced_search.search_messages_advanced({"channel_id": "1"})
-    assert result[0].text == "No matching messages found by native Discord search."
+    assert "returned=0, total_results=unknown" in result[0].text
+    assert "No messages returned on this page." in result[0].text
 
 
 @pytest.mark.asyncio
@@ -252,7 +253,7 @@ async def test_search_and_context_work_during_a_full_write_cooldown(setup_search
             advanced_search.get_message_context({"channel_id": "1", "message_id": "102"}),
             timeout=0.5,
         )
-        assert "Native Discord search: 1 result" in search[0].text
+        assert "Native Discord search: returned=1" in search[0].text
         assert "[TARGET MESSAGE]" in context[0].text
 
     assert len(limiter._action_timestamps) == 5

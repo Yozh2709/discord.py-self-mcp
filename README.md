@@ -376,9 +376,19 @@ search_messages_advanced returns previews of up to preview_chars characters
 (default 240) within max_output_chars (default 3500). Even when limit is large,
 the response may contain fewer messages to stay inside that budget. Follow
 next_offset with the same filters, rather than assuming limit messages were
-returned. has_more is conservative and the final continuation may be empty.
-Previews include jump URLs, IDs and reply IDs. Open relevant hits with
-get_message_context to read more.
+returned. returned is the number shown; total_results is Discord's reported
+matching count for the original filters. It is not capped by limit or the text
+budget. The count is captured from the same first search response, including
+empty pages, with no extra count request. Later SDK pages can narrow the date
+range; their counts do not overwrite the original total.
+
+has_more uses the total when available, otherwise it is conservative. A missing
+counter is unknown (null in batch JSON), not an inferred zero. Indexing counts
+are marked total_results_partial. If the 10,000-result search window is reached,
+search_window_exhausted is set; narrow the date range to continue. An empty page
+with remaining matches is marked search_incomplete instead of claiming no
+matches. Previews retain IDs, reply IDs and a shared channel/author legend.
+Open relevant hits with get_message_context to read more.
 
 For several terms, use search_messages_batch:
 
@@ -392,8 +402,9 @@ For several terms, use search_messages_batch:
 ~~~
 
 The batch shares an output budget, deduplicates messages across queries and
-labels matched_queries. Each query reports returned, has_more, next_offset and
-any error. Continue an individual query with search_messages_advanced and that
+labels matched_queries. Each query reports returned, total_results, has_more,
+next_offset and any error. Totals can overlap and must not be summed across
+queries. Continue an individual query with search_messages_advanced and that
 query's next_offset. partial_failure marks a batch with some failed queries;
 failure of all queries is an MCP error.
 

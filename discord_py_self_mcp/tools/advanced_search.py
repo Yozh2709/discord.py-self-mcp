@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import aclosing
 from datetime import datetime, timezone
 import json
 
@@ -9,6 +10,7 @@ from ..bot import client
 from ..tool_utils import normalize_history_limit
 from .embed import DETAILS_SCHEMA, MessageFormatter, detailed_output, get_reply_to_message_id
 from .registry import registry
+from .search_metadata import SearchMetadata, search_with_metadata
 
 
 def _snowflake(value: object, name: str) -> int:
@@ -50,8 +52,10 @@ def _integer(arguments, name, default, low, high):
 
 
 SEARCH_OUTPUT_SCHEMA = {
-    "preview_chars": {"type": "integer", "minimum": 80, "maximum": 800, "default": 240},
-    "max_output_chars": {"type": "integer", "minimum": 2000, "maximum": 16000, "default": 3500},
+    "preview_chars": {"type": "integer", "minimum": 80, "maximum": 800, "default": 240,
+                      "description": "80-800 characters per preview; default 240."},
+    "max_output_chars": {"type": "integer", "minimum": 2000, "maximum": 16000, "default": 3500,
+                         "description": "2000-16000 characters including metadata; default 3500. Does not cap total_results."},
     "details": DETAILS_SCHEMA,
 }
 
@@ -64,6 +68,7 @@ SEARCH_TOOL = dict(
         "Returns bounded previews with a shared author/role/channel legend and no colours by default. "
         "Full repeated metadata require details=true; roles use no member lookups. "
         "For multiple terms use search_messages_batch to deduplicate and share an output budget. "
+        "Returns returned and total_results (Discord's full matching count, independent of the output budget). "
         "Read a useful hit with get_message_context to expand its text and reply chain."
     ),
     input_schema={
@@ -90,12 +95,14 @@ SEARCH_TOOL = dict(
                 "type": "string",
                 "description": "Exclusive upper bound, same formats as after. To include a whole day, use the following day's date.",
             },
-            "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50,
+                      "description": "1-200 returned messages, default 50. total_results counts all matches, not just this page."},
             "offset": {
                 "type": "integer", "minimum": 0, "maximum": 9975, "default": 0,
                 "description": "Search-result offset for pagination; Discord limits deep search offsets.",
             },
-            "oldest_first": {"type": "boolean", "default": False},
+            "oldest_first": {"type": "boolean", "default": False,
+                             "description": "true: earliest messages first; false: latest first (default)."},
             **SEARCH_OUTPUT_SCHEMA,
         },
     },
@@ -160,33 +167,43 @@ async def _search_page(arguments: dict):
             details=details, channel_id=scope_id if channel_id is not None else None,
             guild_id=scope_id if guild_id is not None else None,
         )
-        async for message in target.search(**kwargs):
-            key = (message.channel.id, message.id)
-            if key in seen:
+        metadata = SearchMetadata()
+        async with aclosing(search_with_metadata(target, metadata, **kwargs)) as results:
+            async for message in results:
+                metadata.capture_message(message)
+                key = (message.channel.id, message.id)
+                if key in seen:
+                    scanned += 1
+                    continue
+                candidate = formatter.clone()
+                row = candidate.format(message, content_limit=preview_chars, query=query)
+                needed = len(row) + len(candidate.header())
+                if not rows and needed > max_output_chars - 512:
+                    smaller = max(40, preview_chars - (needed - max_output_chars + 512))
+                    row = candidate.format(message, content_limit=smaller, query=query)
+                if characters + len(row) + len(candidate.header()) + 1 > max_output_chars - 512:
+                    if not rows:
+                        raise ValueError("Result metadata exceeds max_output_chars; increase the output budget")
+                    output_limited = True
+                    break
+                seen.add(key)
+                formatter = candidate
+                rows.append({"key": key, "text": row, "message": message, "offset_after": offset + scanned + 1})
+                characters += len(row) + 1
                 scanned += 1
-                continue
-            candidate = formatter.clone()
-            row = candidate.format(message, content_limit=preview_chars, query=query)
-            needed = len(row) + len(candidate.header())
-            if not rows and needed > max_output_chars - 512:
-                smaller = max(40, preview_chars - (needed - max_output_chars + 512))
-                row = candidate.format(message, content_limit=smaller, query=query)
-            if characters + len(row) + len(candidate.header()) + 1 > max_output_chars - 512:
-                if not rows:
-                    raise ValueError("Result metadata exceeds max_output_chars; increase the output budget")
-                output_limited = True
-                break
-            seen.add(key)
-            formatter = candidate
-            rows.append({"key": key, "text": row, "message": message, "offset_after": offset + scanned + 1})
-            characters += len(row) + 1
-            scanned += 1
-        more = (output_limited or scanned == limit) and offset + scanned <= 9975
+        position = offset + scanned
+        total = metadata.total_results
+        more = position < total if total is not None else output_limited or scanned == limit
+        window_exhausted = more and position > 9975
+        incomplete = more and scanned == 0
         return {
             "rows": rows, "offset": offset, "has_more": more,
-            "next_offset": offset + scanned if more else None,
+            "returned": len(rows), "total_results": total,
+            "next_offset": position if more and not window_exhausted and not incomplete else None,
             "output_limited": output_limited, "preview_chars": preview_chars,
-            "legend": formatter.header(),
+            "legend": formatter.header() if rows else "",
+            "total_results_partial": metadata.indexing,
+            "search_window_exhausted": window_exhausted, "search_incomplete": incomplete,
         }
     except Exception as exc:
         raise RuntimeError(f"Error in native Discord search: {exc}") from None
@@ -195,13 +212,20 @@ async def _search_page(arguments: dict):
 @registry.register(**SEARCH_TOOL)
 async def search_messages_advanced(arguments: dict):
     page = await _search_page(arguments)
-    if not page["rows"]:
-        return [TextContent(type="text", text="No matching messages found by native Discord search.")]
+    total = page["total_results"] if page["total_results"] is not None else "unknown"
     header = (
-        f"Native Discord search: {len(page['rows'])} result(s), offset={page['offset']}. "
+        f"Native Discord search: returned={page['returned']}, total_results={total}, offset={page['offset']}. "
         f"has_more={str(page['has_more']).lower()}, next_offset={page['next_offset']}, "
         f"output_limited={str(page['output_limited']).lower()}, preview_chars={page['preview_chars']}."
     )
+    if page["total_results_partial"]:
+        header += " total_results_partial=true (Discord is still indexing)."
+    if page["search_window_exhausted"]:
+        header += " Search window exhausted; narrow the date range to continue."
+    if page["search_incomplete"]:
+        header += " No messages returned despite a positive remaining count; retry or narrow the date range."
+    elif not page["rows"]:
+        header += " No messages returned on this page."
     sections = [header, page["legend"], *(row["text"] for row in page["rows"])]
     return [TextContent(type="text", text="\n".join(section for section in sections if section))]
 
@@ -212,7 +236,8 @@ async def search_messages_advanced(arguments: dict):
         "Search multiple terms with the same server/channel, author and date filters. "
         "Shares one bounded output budget, deduplicates messages and labels matching queries. "
         "Use this instead of printing many separate search responses. Open useful hits with "
-        "get_message_context, including reply ancestors; each query has its own next_offset."
+        "get_message_context, including reply ancestors; each query has its own next_offset "
+        "and total_results count. Totals can overlap across queries and must not be summed."
     ),
     input_schema={
         "type": "object",
@@ -220,9 +245,12 @@ async def search_messages_advanced(arguments: dict):
             **{key: value for key, value in SEARCH_TOOL["input_schema"]["properties"].items()
                if key not in {"query", "limit", "preview_chars", "max_output_chars"}},
             "queries": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8},
-            "limit_per_query": {"type": "integer", "minimum": 1, "maximum": 30, "default": 10},
-            "preview_chars": {"type": "integer", "minimum": 80, "maximum": 400, "default": 160},
-            "max_output_chars": {"type": "integer", "minimum": 4000, "maximum": 20000, "default": 10000},
+            "limit_per_query": {"type": "integer", "minimum": 1, "maximum": 30, "default": 10,
+                                "description": "1-30 returned messages per query, default 10. Does not cap total_results."},
+            "preview_chars": {"type": "integer", "minimum": 80, "maximum": 400, "default": 160,
+                              "description": "80-400 characters per preview; default 160."},
+            "max_output_chars": {"type": "integer", "minimum": 4000, "maximum": 20000, "default": 10000,
+                                 "description": "4000-20000 characters shared by all queries, default 10000. Does not cap total_results."},
         },
         "required": ["queries"],
     },
@@ -246,6 +274,7 @@ async def search_messages_batch(arguments):
     ], return_exceptions=True)
     summaries = [
         {"query": query, "returned": 0, "has_more": False, "next_offset": None,
+         "total_results": None if isinstance(page, Exception) else page["total_results"],
          **({"error": str(page)[:120]} if isinstance(page, Exception) else {})}
         for query, page in zip(queries, pages)
     ]
@@ -303,6 +332,11 @@ async def search_messages_batch(arguments):
         else:
             summary["has_more"] = page["has_more"]
             summary["next_offset"] = page["next_offset"]
+            for flag in ("search_window_exhausted", "search_incomplete"):
+                if page[flag]:
+                    summary[flag] = True
+        if page["total_results_partial"]:
+            summary["total_results_partial"] = True
         payload["output_limited"] |= page["output_limited"]
     text = encode()
     if len(text) > budget:
