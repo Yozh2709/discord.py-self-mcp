@@ -108,10 +108,14 @@ python3 scripts/dcli.py daemon restart
 
 #### Send Message
 ```bash
-python3 scripts/dcli.py send-message --channel CHANNEL_ID --content "Hello World"
+python3 scripts/dcli.py send-message --channel CHANNEL_ID --content "Hello World" --typing-seconds 3
 ```
 
+Before sending, --typing-seconds is required: choose a number greater than 0 and
+at most 60. The account shows Discord's typing indicator for this duration.
+
 #### Delete Message
+
 ```bash
 python3 scripts/dcli.py delete-message --channel CHANNEL_ID --message MESSAGE_ID
 ```

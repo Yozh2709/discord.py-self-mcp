@@ -1,4 +1,5 @@
 import discord
+import os
 import inspect
 import importlib
 import sys
@@ -50,7 +51,8 @@ captcha_solver = None
 
 class SelfBot(discord.Client):
     def __init__(self):
-        init_rate_limiter()
+        if rate_limiter is None:
+            init_rate_limiter()
         super().__init__()
 
     async def on_ready(self):
@@ -123,4 +125,7 @@ async def solve_captcha() -> str:
     raise Exception(f"Captcha solve failed: {error_text}")
 
 
-client = SelfBot()
+from .account_manager import AccountManager, ClientProxy
+
+client = ClientProxy(SelfBot())
+account_manager = AccountManager(client, SelfBot)

@@ -4,7 +4,7 @@ Usage: python3 dcli.py <command> [args]
 
 Commands:
   daemon <start|stop|restart|status>  - Manage daemon process
-  send-message --channel ID --content "msg" [--reply-to MESSAGE_ID]
+  send-message --channel ID --content "msg" --typing-seconds SECONDS [--reply-to MESSAGE_ID]
   read-messages --channel ID [--limit N] [--after TIME]
   get-message-attachments --channel ID --message ID [--attachment-index N] [--download --output-dir DIR]
   list-guilds
@@ -44,6 +44,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from discord_py_self_mcp.cli_runtime import AUTH_FILE, PID_FILE, SOCKET_PATH
+from discord_py_self_mcp.tool_utils import validate_typing_seconds
 
 
 def read_pid() -> int | None:
@@ -244,15 +245,21 @@ def cmd_get_message_attachments(
         print(f"  {destination}")
 
 
-def cmd_send_message(channel_id, content, reply_to_message_id=None):
-    args = {"channel_id": channel_id, "content": content}
+def cmd_send_message(channel_id, content, typing_seconds, reply_to_message_id=None):
+    try:
+        typing_seconds = validate_typing_seconds(typing_seconds)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return
+    args = {"channel_id": channel_id, "content": content, "typing_seconds": typing_seconds}
     if reply_to_message_id is not None:
         args["reply_to_message_id"] = reply_to_message_id
     result = send_request(
         {
             "command": "send_message",
             "args": args,
-        }
+        },
+        timeout=typing_seconds + 30,
     )
     if "error" in result:
         print(f"Error: {result['error']}")
@@ -557,6 +564,7 @@ def main():
     send_parser = subparsers.add_parser("send-message", help="Send a message")
     send_parser.add_argument("--channel", "-c", required=True, type=int, help="Channel ID")
     send_parser.add_argument("--content", "-m", required=True, help="Message content")
+    send_parser.add_argument("--typing-seconds", required=True, type=float, help="Typing duration before sending: greater than 0, at most 60 seconds")
     send_parser.add_argument("--reply-to", "-r", type=int, default=None, help="Message ID to reply to")
 
     read_parser = subparsers.add_parser("read-messages", help="Read messages from channel")
@@ -639,7 +647,7 @@ def main():
     if args.command == "daemon":
         cmd_daemon(args.action)
     elif args.command == "send-message":
-        cmd_send_message(args.channel, args.content, args.reply_to)
+        cmd_send_message(args.channel, args.content, args.typing_seconds, args.reply_to)
     elif args.command == "read-messages":
         cmd_read_messages(args.channel, args.limit, args.after)
     elif args.command == "get-message-attachments":

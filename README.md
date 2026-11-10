@@ -21,6 +21,30 @@
 
 ---
 
+## this fork
+
+Fork of [Microck/discord.py-self-mcp](https://github.com/Microck/discord.py-self-mcp)
+with indexed and batch search, reply context, forum search, saved accounts and
+switching, mutual friends/servers, verified membership, required typing duration
+and compact message output. Saved accounts use Windows DPAPI.
+
+[Инструкция на русском](README-FORK-RU.md)
+
+Install this fork from source on Windows:
+
+~~~powershell
+git clone --branch codex/discord-mcp-enhancements https://github.com/Yozh2709/discord.py-self-mcp.git
+cd discord.py-self-mcp
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install .
+~~~
+
+Configure your MCP client to run the checkout's Python with
+args: -m discord_py_self_mcp.main and a DISCORD_TOKEN environment variable.
+The saved profile selected through switch_account is reused on future starts.
+The npm package and release links below refer to the upstream project.
+This fork has not been published as a separate npm package.
+
 ## quick start
 
 this is a local mcp server (stdio transport). your mcp client spawns it as a process, and you provide secrets (like `DISCORD_TOKEN`) via the client's `env`/`environment` config.
@@ -195,7 +219,11 @@ powered by the robust `discord.py-self` library.
 | category | tools | description |
 |----------|-------|-------------|
 | **system** | 2 | get_user_info, list_guilds |
-| **messages** | 6 | send_message, read_messages, search_messages, edit_message, delete_message, get_message_attachments |
+| **accounts** | 3 | list_accounts, save_account, switch_account |
+| **messages** | 9 | send_message, read_messages, search_messages, search_messages_advanced, search_messages_batch, get_message_context, edit_message, delete_message, get_message_attachments |
+| **forum search** | 1 | search_forum_topics |
+| **member lookup** | 1 | get_guild_member |
+| **mutuals** | 1 | get_user_mutuals |
 | **channels** | 3 | create_channel, delete_channel, list_channels (bulk and compact summary modes) |
 | **dms** | 2 | list_dm_channels, list_unread_dms |
 | **pings** | 2 | list_pings, mark_message_read |
@@ -254,6 +282,252 @@ actually see — useful for checking a change landed the way you meant.
 Flag names are accepted in either spelling on input, but the `allowed` /
 `denied` lists in JSON output use discord.py-self's canonical names — so
 `view_channel` comes back as `read_messages`.
+
+### native search with author and date filters (local patch)
+
+`search_messages_advanced` uses Discord's indexed search. Provide exactly one of
+`channel_id` (channel, DM, or thread) or `guild_id` (server). Combine optional
+`query`, `author_id`, `after`, and `before`; omit `query` to filter only by author
+and dates. This is a separate tool; `search_messages` keeps its original behavior.
+
+Example: messages from one author during October 2026:
+
+```json
+{
+  "channel_id": "123456789012345678",
+  "author_id": "987654321098765432",
+  "query": "release",
+  "after": "2026-10-01",
+  "before": "2026-11-01",
+  "limit": 50,
+  "offset": 0
+}
+```
+
+Date bounds are exclusive. `YYYY-MM-DD` means midnight UTC; ISO 8601 timestamps
+without a timezone also use UTC. Message IDs can be used instead of dates.
+Set `oldest_first: true` for chronological order. Increase `offset` by the number
+of results returned to get the next page. The default result limit is 50, maximum
+200; offsets are bounded to 9975 and the last page is capped at 10000 results.
+Split a larger search into smaller date ranges.
+
+Search covers history indexed by Discord, subject to the account's permissions
+and Discord's search availability. API errors are reported; the tool does not
+silently substitute a limited recent-history scan. The patch requires the
+project's existing `discord.py-self==2.1.0` dependency. Offline tests exercise
+filter forwarding, UTC conversion, pagination, validation and error handling;
+live-account behavior has not been tested.
+
+`get_message_context` expands a search result using its `channel_id` and
+`message_id`. It fetches the target message and the nearest messages before and
+after it through channel history, including all authors. Results are chronological
+and the target is marked `[TARGET MESSAGE]`. Each side defaults to 10 messages,
+with `before_count` and `after_count` independently configurable from 0 to 50.
+Fewer rows are returned if history ends or no more accessible messages exist.
+Deleted or inaccessible target messages produce an explicit error.
+
+```json
+{
+  "channel_id": "123456789012345678",
+  "message_id": "123456789012345679",
+  "before_count": 10,
+  "after_count": 10
+}
+```
+
+Advanced search results include channel IDs, author IDs and timestamps so the
+client can expand any hit directly, including hits from a server-wide search.
+
+Advanced search and message context rely on discord.py-self's handling of
+Discord's HTTP rate-limit headers and 429 responses. They do not use the extra
+local action cooldown, so reading is not blocked by the local write budget.
+
+### mutual servers and friends (local patch)
+
+get_user_mutuals returns servers and friends shared with a user relative to the
+active saved account. The response identifies both the target and viewer.
+
+~~~json
+{"user_id": "123456789012345678"}
+~~~
+
+The tool makes one profile request with mutual guild/friend flags. Server names
+come from the guild cache; an uncached name is null, without an extra lookup.
+There are no per-guild/member/friend fetches or extra local read cooldown.
+Use include_guilds=false or include_friends=false to skip an unneeded category.
+
+Each list has status, count, items and next_offset. available means Discord
+exposed a list; partial includes available_count when the reported friend total
+differs from the exposed list. count_only means only a friend count was exposed,
+and unavailable means the requested data were missing. A masked profile is
+labelled limited and its totals are unknown. not_requested marks an excluded
+category. Missing or restricted data never imply zero mutuals. HTTP access
+failures are MCP errors, including 404 responses that cannot distinguish a
+missing user from an inaccessible profile.
+
+limit defaults to 20 entries per list, within a shared max_output_chars budget
+(default 6000). Continue by passing the corresponding next_offset value as
+guild_offset or friend_offset. Each continuation fetches a fresh profile;
+offsets paginate entries exposed by Discord, not hidden entries.
+
+### compact search, reply chains and cached roles (local patch)
+
+search_messages_advanced returns previews of up to preview_chars characters
+(default 240) within max_output_chars (default 3500). Even when limit is large,
+the response may contain fewer messages to stay inside that budget. Follow
+next_offset with the same filters, rather than assuming limit messages were
+returned. has_more is conservative and the final continuation may be empty.
+Previews include jump URLs, IDs and reply IDs. Open relevant hits with
+get_message_context to read more.
+
+For several terms, use search_messages_batch:
+
+~~~json
+{
+  "guild_id": "123456789012345678",
+  "queries": ["vulnerability", "193367", "crash"],
+  "limit_per_query": 10,
+  "max_output_chars": 10000
+}
+~~~
+
+The batch shares an output budget, deduplicates messages across queries and
+labels matched_queries. Each query reports returned, has_more, next_offset and
+any error. Continue an individual query with search_messages_advanced and that
+query's next_offset. partial_failure marks a batch with some failed queries;
+failure of all queries is an MCP error.
+
+get_message_context follows reply parents up to reply_depth (default 2, maximum
+5). It reuses the requested window and already resolved references before
+fetching missing parents. reply_depth=0 disables extra parent fetches.
+Deleted and inaccessible parents are labelled. Neighbouring messages remain in
+chronological order; additional ancestors have their own section.
+Context text is bounded by max_output_chars (default 12000) and message_chars
+(default 1000); the target is always retained and trimmed windows are labelled.
+
+History, thread reads, both search tools and context default to a shared legend.
+Each channel URL and each author's ID, username and highest role name appear
+once. Rows contain the message ID, author/channel references, UTC time and an
+optional ->reply_id. Append the message ID to its channel URL to get a jump link.
+For batch searches the legend is shared across all queries. Output budgets
+include the legend; omitted rows do not leave unused author/channel references.
+
+Colours, role IDs, cache-source fields and repeated full message URLs are
+omitted by default. Set details=true for the full per-message metadata format.
+In detailed mode role_color describes the highest role and display_color comes
+from the highest coloured role. Normal JSON serialization keeps only the role
+name/status alongside existing message fields.
+
+Role metadata uses only the message and guild caches: no member/role fetches.
+Missing data appear as [role unknown] in the legend; DMs omit roles.
+Cached roles describe available member state, not historical rank.
+
+Native-search and context failures now produce MCP isError=true. Unavailable
+discrawl tools are hidden from discovery, and direct failures are MCP errors.
+
+### forum topic search
+
+Use the read-only MCP tool search_forum_topics to search forum topic titles
+through Discord's indexed thread-search API. It includes active and archived
+topics by default and does not scan the local active-thread cache.
+
+Example: search a suggestions forum for fly:
+
+~~~json
+{
+  "forum_id": "123456789012345678",
+  "query": "fly",
+  "limit": 10,
+  "offset": 0
+}
+~~~
+
+The JSON result contains titles, Discord links, thread IDs, archive status,
+first-post previews (up to 400 characters), total_results, has_more and
+next_offset. Use read_thread_messages with a returned thread_id to read replies.
+The search targets titles, not every message's contents.
+
+Omit archived to include both states, or pass true/false to filter. limit is 1–25,
+offset is 0–9975. Pass next_offset with the same query for the following page.
+Discord's own rate limits apply; there is no additional local action cooldown.
+Index-not-ready retries are bounded, and failures are reported as MCP errors.
+
+### current server membership
+
+Use get_guild_member with guild_id and user_id to check current membership.
+It always queries Discord's API, even when an older member object is cached.
+The response includes source=discord_api, checked_at and one of:
+
+- present / is_member=true: Discord returned the member, with username, server
+  nickname and join date.
+- absent / is_member=false: Discord returned Unknown Member (code 10007).
+- unknown / is_member=null: access was denied or Discord could not verify the
+  member. Unknown Guild, HTTP 403 and other API failures never mean absent.
+
+Messages found in history prove historical activity, not current membership.
+An empty local member cache proves neither absence nor departure.
+inspect_effective_permissions now refreshes member targets from the API too;
+use get_guild_member when permissions are not needed.
+
+### saved accounts and switching (local patch)
+
+The MCP tools list_accounts, save_account and switch_account manage named
+Discord user accounts. On the first successful startup, the existing
+DISCORD_TOKEN is saved as main. Windows DPAPI encrypts saved tokens for the
+current Windows user; no token is included in tool responses.
+
+Use save_account with account, token and optional replace=true to update an
+existing profile. Discord validates the token before saving. Saving does not
+change the active connection. Use list_accounts to see profile names, Discord
+identities, connection status and the active profile.
+
+To switch to a saved profile:
+
+~~~json
+{"account": "work"}
+~~~
+
+Call switch_account with these arguments. It waits for running commands to
+finish, connects a fresh Discord client and checks its identity and readiness
+before replacing the old connection. A failed preparation keeps the previous
+account active. Cached messages, channels, members and modals are isolated
+between accounts; concurrent reads remain supported.
+
+The selected profile is reused on the next MCP startup, ahead of the legacy
+DISCORD_TOKEN fallback. Set DISCORD_ACCOUNT to select a particular saved profile
+at startup, or DISCORD_ACCOUNTS_FILE to choose the encrypted account file.
+The default file is under LocalAppData/discord-self-mcp/accounts.json.
+Switching changes this running MCP server. Other clients sharing that server
+use the same active account.
+
+Reconnect MCP once after installing this change to load the new tools.
+Subsequent account switches do not require an app restart.
+Saved profiles in this build require Windows; the separate CLI daemon does
+not share the MCP server's active connection.
+
+### required typing duration before sending (local patch)
+
+send_message and send_thread_message require an explicit typing_seconds
+number greater than 0 and at most 60. Fractions are supported; there is no default.
+This covers messages and replies in channels, DMs, group DMs and existing threads.
+
+~~~json
+{
+  "channel_id": "123456789012345678",
+  "content": "Hello!",
+  "typing_seconds": 3
+}
+~~~
+
+After any local message cooldown, the tool starts Discord's typing indicator,
+keeps refreshing it while waiting for the chosen duration, then sends.
+Missing or invalid durations fail before looking up the destination or sending.
+If typing cannot start, the message is not sent. The confirmation includes the
+chosen duration. For the CLI, --typing-seconds is required too.
+Creating a new forum topic remains a separate create_thread operation: the
+destination thread does not exist yet, so it cannot show a typing indicator.
+
+Reconnect the MCP server after upgrading so clients reload the required input.
 
 ### direct messages
 
@@ -544,14 +818,14 @@ npm install -g discord-selfbot-mcp
 echo "DISCORD_TOKEN=***" > .env
 
 # use skill mode (from package directory)
-python3 scripts/dcli.py send-message --channel 123 --content "Hello!"
+python3 scripts/dcli.py send-message --channel 123 --content "Hello!" --typing-seconds 3
 ```
 
 **key commands**:
 ```bash
 python3 scripts/dcli.py daemon start     # start the daemon
 python3 scripts/dcli.py daemon status    # check daemon status
-python3 scripts/dcli.py send-message --channel CHANNEL_ID --content "Hello"
+python3 scripts/dcli.py send-message --channel CHANNEL_ID --content "Hello" --typing-seconds 3
 python3 scripts/dcli.py list-guilds
 python3 scripts/dcli.py read-messages --channel CHANNEL_ID --limit 20
 python3 scripts/dcli.py get-message-attachments --channel CHANNEL_ID --message MESSAGE_ID

@@ -64,7 +64,14 @@ def _binary_exists(binary: str) -> bool:
         return False
     if shutil.which(binary):
         return True
-    return Path(binary).expanduser().exists()
+    return Path(binary).expanduser().is_file()
+
+
+def discrawl_available() -> bool:
+    try:
+        return _binary_exists(_resolve_discrawl_binary({}))
+    except (ValueError, OSError):
+        return False
 
 
 async def _run_discrawl(
@@ -72,28 +79,25 @@ async def _run_discrawl(
 ) -> Response:
     command = str(arguments.get("command", "")).strip()
     if not command:
-        return _text("Missing required field: command")
+        raise ValueError("Missing required field: command")
 
     args = arguments.get("args", [])
     if not isinstance(args, list) or any(not isinstance(item, str) for item in args):
-        return _text("args must be an array of strings")
+        raise ValueError("args must be an array of strings")
 
     timeout_seconds = arguments.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
     try:
         timeout_seconds = int(timeout_seconds)
     except (TypeError, ValueError):
-        return _text("timeout_seconds must be an integer")
+        raise ValueError("timeout_seconds must be an integer") from None
 
     if timeout_seconds < 5 or timeout_seconds > 1800:
-        return _text("timeout_seconds must be between 5 and 1800 seconds")
+        raise ValueError("timeout_seconds must be between 5 and 1800 seconds")
 
-    try:
-        binary = _resolve_discrawl_binary(arguments)
-    except ValueError as exc:
-        return _text(str(exc))
+    binary = _resolve_discrawl_binary(arguments)
 
     if not _binary_exists(binary):
-        return _text(
+        raise RuntimeError(
             (
                 f"Could not find discrawl binary: {binary}\n"
                 f"Clone and build {DEFAULT_DISCRAWL_FORK_URL} at ../discrawl-self/bin/discrawl "
@@ -121,7 +125,7 @@ async def _run_discrawl(
     except asyncio.TimeoutError:
         process.kill()
         await process.wait()
-        return _text(
+        raise RuntimeError(
             (
                 f"discrawl command timed out after {timeout_seconds}s\n"
                 f"command={' '.join(cmd)}"
@@ -143,11 +147,14 @@ async def _run_discrawl(
     if not stdout_text and not stderr_text:
         parts.append("No output")
 
+    if process.returncode:
+        raise RuntimeError("\n\n".join(parts))
     return _text("\n\n".join(parts))
 
 
 @registry.register(
     name="run_discrawl",
+    available=discrawl_available,
     description="Run a discrawl CLI command with options",
     input_schema={
         "type": "object",
@@ -201,6 +208,7 @@ def _append_value(args: list[str], flag: str, value: object) -> None:
 
 @registry.register(
     name="discrawl_doctor",
+    available=discrawl_available,
     description="Run discrawl doctor",
     input_schema={
         "type": "object",
@@ -227,6 +235,7 @@ async def discrawl_doctor(arguments: dict) -> Response:
 
 @registry.register(
     name="discrawl_status",
+    available=discrawl_available,
     description="Run discrawl status",
     input_schema={
         "type": "object",
@@ -253,6 +262,7 @@ async def discrawl_status(arguments: dict) -> Response:
 
 @registry.register(
     name="discrawl_sync",
+    available=discrawl_available,
     description="Run discrawl sync with typed options",
     input_schema={
         "type": "object",
@@ -324,6 +334,7 @@ async def discrawl_sync(arguments: dict) -> Response:
 
 @registry.register(
     name="discrawl_search",
+    available=discrawl_available,
     description="Run discrawl search with typed options",
     input_schema={
         "type": "object",
@@ -372,7 +383,7 @@ async def discrawl_sync(arguments: dict) -> Response:
 async def discrawl_search(arguments: dict) -> Response:
     query = str(arguments.get("query", "")).strip()
     if not query:
-        return _text("Missing required field: query")
+        raise ValueError("Missing required field: query")
 
     args: list[str] = []
     if arguments.get("guild") is not None:
@@ -392,6 +403,7 @@ async def discrawl_search(arguments: dict) -> Response:
 
 @registry.register(
     name="discrawl_messages",
+    available=discrawl_available,
     description="Run discrawl messages with typed options",
     input_schema={
         "type": "object",
@@ -468,6 +480,7 @@ async def discrawl_messages(arguments: dict) -> Response:
 
 @registry.register(
     name="discrawl_mentions",
+    available=discrawl_available,
     description="Run discrawl mentions with typed options",
     input_schema={
         "type": "object",
@@ -521,7 +534,7 @@ async def discrawl_mentions(arguments: dict) -> Response:
     if mention_type is not None:
         text = str(mention_type).strip().lower()
         if text not in ("user", "role"):
-            return _text('type must be "user" or "role"')
+            raise ValueError('type must be "user" or "role"')
         arguments = dict(arguments)
         arguments["type"] = text
 

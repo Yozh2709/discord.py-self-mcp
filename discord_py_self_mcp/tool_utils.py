@@ -1,3 +1,6 @@
+import asyncio
+import math
+
 import discord
 
 from .bot import rate_limiter
@@ -5,6 +8,16 @@ from .bot import rate_limiter
 DISCORD_MESSAGE_LIMIT = 2000
 DEFAULT_HISTORY_LIMIT = 50
 MAX_HISTORY_LIMIT = 200
+MAX_TYPING_SECONDS = 60
+TYPING_SECONDS_SCHEMA = {
+    "type": "number",
+    "exclusiveMinimum": 0,
+    "maximum": MAX_TYPING_SECONDS,
+    "description": (
+        "Required explicit duration in seconds to show Discord's typing indicator "
+        "before sending (greater than 0, up to 60; fractions allowed). No default."
+    ),
+}
 NOT_READY_TEXT = "Discord connection is not ready yet. Please try again in a few seconds."
 NON_MESSAGEABLE_TEXT = (
     "Cannot send messages to this channel. It may not support text messages."
@@ -14,6 +27,25 @@ NON_MESSAGEABLE_TEXT = (
 async def apply_rate_limit(action_type: str) -> None:
     if rate_limiter and rate_limiter.is_enabled():
         await rate_limiter.wait_if_needed(action_type)
+
+
+def validate_typing_seconds(value: object) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not 0 < value <= MAX_TYPING_SECONDS
+        or not math.isfinite(value)
+    ):
+        raise ValueError("typing_seconds is required and must be a number greater than 0 and at most 60")
+    return float(value)
+
+
+async def send_with_typing(channel, content: str, typing_seconds: float, **send_kwargs):
+    """Keep Discord's typing heartbeat active until the delayed send completes."""
+    seconds = validate_typing_seconds(typing_seconds)
+    async with channel.typing():
+        await asyncio.sleep(seconds)
+        return await channel.send(content, **send_kwargs)
 
 
 def format_user_display(user: discord.abc.User) -> str:

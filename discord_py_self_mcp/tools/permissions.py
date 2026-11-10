@@ -7,6 +7,7 @@ from ..bot import client
 from ..tool_utils import apply_rate_limit
 from .registry import registry
 from .roles import _hierarchy_block, _parse_permissions
+from .member_lookup import fetch_member_status
 
 
 def _resolve_target(guild, target_id: str, target_type: str):
@@ -429,7 +430,9 @@ async def set_category_permissions(arguments: dict):
     name="inspect_effective_permissions",
     description=(
         "Show what a role or member can actually do: guild-wide permissions plus which "
-        "channels they can and cannot see once overwrites are applied. Returns JSON."
+        "channels they can and cannot see once overwrites are applied. Returns JSON. "
+        "Member targets are refreshed from Discord's API. For membership-only questions "
+        "use get_guild_member; a cache miss is not proof that a member left."
     ),
     input_schema={
         "type": "object",
@@ -452,11 +455,22 @@ async def inspect_effective_permissions(arguments: dict):
         if not guild:
             return [TextContent(type="text", text="Guild not found")]
 
-        target, error = _resolve_target(
-            guild, arguments["target_id"], arguments["target_type"]
-        )
-        if error:
-            return [TextContent(type="text", text=error)]
+        if arguments["target_type"] == "member":
+            target, status, error = await fetch_member_status(guild, int(arguments["target_id"]))
+            if status != "present":
+                payload = {
+                    "target_id": arguments["target_id"], "target_type": "member",
+                    "membership_status": status,
+                    "is_member": False if status == "absent" else None,
+                    "member_source": "discord_api",
+                }
+                if error:
+                    payload["error"] = error
+                return [TextContent(type="text", text=json.dumps(payload))]
+        else:
+            target, error = _resolve_target(guild, arguments["target_id"], arguments["target_type"])
+            if error:
+                return [TextContent(type="text", text=error)]
 
         limit = int(arguments.get("channel_limit", 25))
 
@@ -484,6 +498,8 @@ async def inspect_effective_permissions(arguments: dict):
             "accessible_channels": sorted(accessible)[:limit],
             "hidden_channels": sorted(hidden)[:limit],
         }
+        if arguments["target_type"] == "member":
+            payload.update(is_member=True, member_source="discord_api")
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=f"Error inspecting permissions: {str(e)}")]

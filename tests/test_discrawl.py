@@ -44,19 +44,13 @@ def test_explicit_absolute_wrong_name_is_rejected(tmp_path):
 
 @pytest.mark.asyncio
 async def test_run_discrawl_rejects_relative_binary_path():
-    result = await discrawl.run_discrawl({"command": "status", "binary": "./discrawl"})
-
-    assert (
-        result[0].text
-        == "binary must be the literal 'discrawl' or an absolute path to a discrawl executable"
-    )
+    with pytest.raises(ValueError, match="absolute path"):
+        await discrawl.run_discrawl({"command": "status", "binary": "./discrawl"})
 
 
 @pytest.mark.asyncio
 async def test_missing_default_binary_points_to_microck_fork(monkeypatch):
     monkeypatch.setattr(discrawl, "_binary_exists", lambda _binary: False)
 
-    result = await discrawl.run_discrawl({"command": "status"})
-
-    assert "https://github.com/Microck/discrawl-self" in result[0].text
-    assert "../discrawl-self/bin/discrawl" in result[0].text
+    with pytest.raises(RuntimeError, match="https://github.com/Microck/discrawl-self"):
+        await discrawl.run_discrawl({"command": "status"})

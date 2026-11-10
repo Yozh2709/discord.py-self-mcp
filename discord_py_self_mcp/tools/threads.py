@@ -2,9 +2,15 @@ import discord
 from mcp.types import TextContent
 
 from ..bot import client
-from ..tool_utils import apply_rate_limit, validate_message_content
+from ..tool_utils import (
+    TYPING_SECONDS_SCHEMA,
+    apply_rate_limit,
+    send_with_typing,
+    validate_message_content,
+    validate_typing_seconds,
+)
 from .registry import registry
-from .embed import format_message_line
+from .embed import DETAILS_SCHEMA, MessageFormatter, detailed_output
 
 @registry.register(
     name="create_thread",
@@ -100,13 +106,15 @@ async def archive_thread(arguments: dict):
         "type": "object",
         "properties": {
             "thread_id": {"type": "string"},
-            "limit": {"type": "integer", "default": 50}
+            "limit": {"type": "integer", "default": 50},
+            "details": DETAILS_SCHEMA,
         },
         "required": ["thread_id"]
     }
 )
 async def read_thread_messages(arguments: dict):
     try:
+        details = detailed_output(arguments)
         thread_id = int(arguments["thread_id"])
         limit = arguments.get("limit", 50)
         
@@ -125,13 +133,14 @@ async def read_thread_messages(arguments: dict):
             return [TextContent(type="text", text=f"Channel {thread_id} is not a thread (type: {type(thread).__name__})")]
         
         messages = []
+        formatter = MessageFormatter(details=details, channel_id=thread_id, guild_id=getattr(getattr(thread, "guild", None), "id", None))
         async for msg in thread.history(limit=limit):
-            messages.append(format_message_line(msg))
+            messages.append(formatter.format(msg))
         
         if not messages:
             return [TextContent(type="text", text="No messages found in thread")]
         
-        return [TextContent(type="text", text="\n".join(reversed(messages)))]
+        return [TextContent(type="text", text=formatter.join(list(reversed(messages))))]
     except Exception as e:
         return [TextContent(type="text", text=f"Error reading thread messages: {str(e)}")]
 
@@ -175,17 +184,19 @@ async def list_active_threads(arguments: dict):
 
 @registry.register(
     name="send_thread_message",
-    description="Send a message to a thread",
+    description="Send a message to a thread after typing for an explicitly chosen typing_seconds duration",
     input_schema={
         "type": "object",
         "properties": {
             "thread_id": {"type": "string"},
-            "content": {"type": "string"}
+            "content": {"type": "string"},
+            "typing_seconds": TYPING_SECONDS_SCHEMA,
         },
-        "required": ["thread_id", "content"]
+        "required": ["thread_id", "content", "typing_seconds"]
     }
 )
 async def send_thread_message(arguments: dict):
+    typing_seconds = validate_typing_seconds(arguments.get("typing_seconds"))
     try:
         thread_id = int(arguments["thread_id"])
         content = arguments["content"]
@@ -206,7 +217,7 @@ async def send_thread_message(arguments: dict):
             return [TextContent(type="text", text=f"Channel {thread_id} is not a thread")]
         
         await apply_rate_limit("message")
-        message = await thread.send(content)
-        return [TextContent(type="text", text=f"Message sent to thread (message_id={message.id})")]
+        message = await send_with_typing(thread, content, typing_seconds)
+        return [TextContent(type="text", text=f"Message sent to thread (message_id={message.id}, typing_seconds={typing_seconds:g})")]
     except Exception as e:
         return [TextContent(type="text", text=f"Error sending message to thread: {str(e)}")]

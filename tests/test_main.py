@@ -2,13 +2,16 @@ import pytest
 from mcp.server.transport_security import TransportSecurityMiddleware
 
 from discord_py_self_mcp import main
+from discord_py_self_mcp.account_store import AccountStore
 
 
 @pytest.mark.asyncio
 async def test_run_app_exits_with_actionable_error_when_token_missing(
-    monkeypatch, capsys
+    monkeypatch, capsys, tmp_path
 ):
     monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+    monkeypatch.delenv("DISCORD_ACCOUNT", raising=False)
+    monkeypatch.setattr(main.account_manager, "store", AccountStore(tmp_path / "accounts.json"))
 
     with pytest.raises(SystemExit) as exc:
         await main.run_app()

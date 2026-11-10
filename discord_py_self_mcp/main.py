@@ -8,8 +8,9 @@ import sys
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent, ImageContent, EmbeddedResource
-from discord_py_self_mcp.bot import client
-from discord_py_self_mcp.logging_utils import log_to_stderr, mask_secret
+from discord_py_self_mcp.bot import account_manager
+from discord_py_self_mcp.account_store import AccountError
+from discord_py_self_mcp.logging_utils import log_to_stderr
 from discord_py_self_mcp.tools import registry
 
 app = Server("discord-selfbot-mcp")
@@ -28,26 +29,21 @@ async def call_tool(
 
 
 async def start_discord_client() -> None:
-    token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        sys.stderr.write(
-            "Error: DISCORD_TOKEN is not set. Configure it in your MCP client or run "
-            "`discord-py-self-mcp-setup`.\n"
-        )
-        raise SystemExit(1)
-
-    log_to_stderr("[STARTUP] Starting Discord connection")
-    log_to_stderr(f"[STARTUP] DISCORD_TOKEN: {mask_secret(token)}")
-
-    # Do not await the long-lived gateway client: it runs alongside the MCP
-    # transport for the lifetime of this process.
-    asyncio.create_task(client.start(token))
+    try:
+        await account_manager.start_initial(os.getenv("DISCORD_TOKEN"))
+    except AccountError as exc:
+        sys.stderr.write(f"Error: {exc}\n")
+        raise SystemExit(1) from None
+    log_to_stderr("[STARTUP] Starting Discord account connection")
 
 
 async def run_stdio() -> None:
     await start_discord_client()
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(read_stream, write_stream, app.create_initialization_options())
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await app.run(read_stream, write_stream, app.create_initialization_options())
+    finally:
+        await account_manager.shutdown()
 
 
 async def run_app() -> None:
@@ -94,8 +90,11 @@ def create_streamable_http_app(host: str = "127.0.0.1"):
     @asynccontextmanager
     async def lifespan(_starlette_app):
         await start_discord_client()
-        async with session_manager.run():
-            yield
+        try:
+            async with session_manager.run():
+                yield
+        finally:
+            await account_manager.shutdown()
 
     return Starlette(routes=[Route("/mcp", endpoint=http_app)], lifespan=lifespan)
 

@@ -63,3 +63,10 @@ test_*.py
 ralph-loop.local.md
 AGENTS.md
 *.tgz
+
+# Private saved-account stores, credentials and diagnostics
+*.dpapi
+discord-accounts.json
+accounts.json
+discord-private/
+*.log

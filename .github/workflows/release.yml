@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   release:
-    if: github.actor != 'github-actions[bot]'
+    if: github.repository == 'Microck/discord.py-self-mcp' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: checkout

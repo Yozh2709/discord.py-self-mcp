@@ -1,9 +1,16 @@
 import json
+from unittest.mock import AsyncMock
 
 import discord
 import pytest
 
 from discord_py_self_mcp.tools import permissions
+
+
+@pytest.fixture(autouse=True)
+def offline_permission_requests(monkeypatch):
+    # These tests use fake network objects; timing is covered by test_rate_limiter.
+    monkeypatch.setattr(permissions, "apply_rate_limit", AsyncMock())
 
 
 class FakeClient:
@@ -60,6 +67,9 @@ class FakeGuild:
         return None
 
     def get_member(self, user_id):
+        return self._members.get(user_id)
+
+    async def fetch_member(self, user_id):
         return self._members.get(user_id)
 
 

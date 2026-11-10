@@ -1,5 +1,8 @@
 from .registry import registry as registry
+from . import accounts as accounts
 from . import messages as messages
+from . import advanced_search as advanced_search
+from . import forum_search as forum_search
 from . import guilds as guilds
 from . import channels as channels
 from . import dms as dms
@@ -11,6 +14,8 @@ from . import interactions as interactions
 from . import threads as threads
 from . import reactions as reactions
 from . import members as members
+from . import member_lookup as member_lookup
+from . import mutuals as mutuals
 from . import roles as roles
 from . import permissions as permissions
 from . import invites as invites

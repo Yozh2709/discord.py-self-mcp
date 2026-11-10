@@ -1,9 +1,17 @@
 from datetime import datetime, timezone
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
 
 import pytest
 from mcp.types import ImageContent
 
 from discord_py_self_mcp.tools import messages
+from discord_py_self_mcp import tool_utils
+
+
+@pytest.fixture(autouse=True)
+def no_real_typing_wait(monkeypatch):
+    monkeypatch.setattr(tool_utils.asyncio, "sleep", AsyncMock())
 
 
 class FakeAuthor:
@@ -110,6 +118,10 @@ class FakeChannel(FakeMessageable):
         self.sent_kwargs = kwargs
         return self._sent_message
 
+    @asynccontextmanager
+    async def typing(self):
+        yield
+
 
 class FakeClient:
     def __init__(self, channel):
@@ -132,7 +144,7 @@ async def test_send_message_without_reply_has_no_reference(monkeypatch):
 
     monkeypatch.setattr(messages, "apply_rate_limit", fake_apply_rate_limit)
 
-    result = await messages.send_message({"channel_id": "1", "content": "hi"})
+    result = await messages.send_message({"channel_id": "1", "content": "hi", "typing_seconds": 3})
 
     assert rate_limit_calls == ["message"]
     assert fake_channel.sent_content == "hi"
@@ -152,7 +164,7 @@ async def test_send_message_empty_reply_id_sends_normally(monkeypatch):
     monkeypatch.setattr(messages, "apply_rate_limit", fake_apply_rate_limit)
 
     result = await messages.send_message(
-        {"channel_id": "1", "content": "hi", "reply_to_message_id": ""}
+        {"channel_id": "1", "content": "hi", "typing_seconds": 3, "reply_to_message_id": ""}
     )
 
     assert fake_channel.sent_content == "hi"
@@ -174,7 +186,7 @@ async def test_send_message_includes_reply_reference(monkeypatch):
     monkeypatch.setattr(messages, "apply_rate_limit", fake_apply_rate_limit)
 
     result = await messages.send_message(
-        {"channel_id": "1", "content": "hi", "reply_to_message_id": "456"}
+        {"channel_id": "1", "content": "hi", "typing_seconds": 3, "reply_to_message_id": "456"}
     )
 
     assert rate_limit_calls == ["message"]
@@ -201,7 +213,7 @@ async def test_read_messages_includes_attachment_metadata(monkeypatch):
 
     result = await messages.read_messages({"channel_id": "1", "limit": 5})
 
-    assert "message_id=123" in result[0].text
+    assert "123 u1 c1 " in result[0].text
     assert "[Attachment 0] photo.png" in result[0].text
     assert "url=https://cdn.discordapp.com/photo.png" in result[0].text
     assert rate_limit_calls == ["action"]
@@ -230,12 +242,12 @@ async def test_read_messages_includes_reply_reference_id(monkeypatch):
     result = await messages.read_messages({"channel_id": "1", "limit": 5})
     text = result[0].text
 
-    assert "message_id=222" in text
-    assert "reply_to=111" in text
+    assert "222 u1 c1 " in text
+    assert "->111:" in text
     # A non-reply message should not gain a reply_to marker
-    assert "message_id=333" in text
-    plain_line = [line for line in text.splitlines() if "message_id=333" in line][0]
-    assert "reply_to=" not in plain_line
+    assert "333 u1 c1 " in text
+    plain_line = [line for line in text.splitlines() if line.startswith("333 ")][0]
+    assert "->" not in plain_line
 
 
 @pytest.mark.asyncio
@@ -306,4 +318,4 @@ async def test_search_messages_applies_rate_limit_and_caps_fetch_window(monkeypa
 
     assert rate_limit_calls == ["action"]
     assert fake_channel.last_history_limit == 300
-    assert "message_id=" in result[0].text
+    assert "199 u1 c1 " in result[0].text

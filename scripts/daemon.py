@@ -49,7 +49,9 @@ from discord_py_self_mcp.logging_utils import log_to_stderr
 from discord_py_self_mcp.tool_utils import (
     NON_MESSAGEABLE_TEXT,
     build_reply_kwargs,
+    send_with_typing,
     validate_message_content,
+    validate_typing_seconds,
 )
 from discord_py_self_mcp.tools.embed import serialize_attachment, serialize_message
 
@@ -209,6 +211,7 @@ class DiscordDaemon:
                 return await self._send_message(
                     args.get("channel_id"),
                     args.get("content"),
+                    args.get("typing_seconds"),
                     args.get("reply_to_message_id"),
                 )
             if cmd == "get_message_attachments":
@@ -319,7 +322,8 @@ class DiscordDaemon:
         messages.reverse()
         return {"messages": messages}
 
-    async def _send_message(self, channel_id, content, reply_to_message_id=None):
+    async def _send_message(self, channel_id, content, typing_seconds, reply_to_message_id=None):
+        typing_seconds = validate_typing_seconds(typing_seconds)
         content_error = validate_message_content(content or "")
         if content_error:
             return {"error": content_error}
@@ -333,8 +337,8 @@ class DiscordDaemon:
             return {"error": NON_MESSAGEABLE_TEXT}
 
         send_kwargs = build_reply_kwargs(reply_to_message_id, channel_id)
-        message = await channel.send(content, **send_kwargs)
-        return {"message_id": message.id, "success": True}
+        message = await send_with_typing(channel, content, typing_seconds, **send_kwargs)
+        return {"message_id": message.id, "success": True, "typing_seconds": typing_seconds}
 
     async def _get_message_attachments(
         self,

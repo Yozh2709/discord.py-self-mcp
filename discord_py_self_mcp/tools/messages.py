@@ -5,13 +5,16 @@ from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, Text
 
 from ..bot import client
 from .registry import registry
-from .embed import build_search_text, format_attachment, format_message_line
+from .embed import DETAILS_SCHEMA, MessageFormatter, build_search_text, detailed_output, format_attachment
 from ..tool_utils import (
     NON_MESSAGEABLE_TEXT,
+    TYPING_SECONDS_SCHEMA,
     apply_rate_limit,
     build_reply_kwargs,
     normalize_history_limit,
+    send_with_typing,
     validate_message_content,
+    validate_typing_seconds,
 )
 
 MAX_ATTACHMENT_BYTES_DEFAULT = 10 * 1024 * 1024
@@ -19,21 +22,23 @@ MAX_ATTACHMENT_BYTES_DEFAULT = 10 * 1024 * 1024
 
 @registry.register(
     name="send_message",
-    description="Send a message to a channel",
+    description="Send a message to a channel, DM or thread after typing for an explicitly chosen typing_seconds duration",
     input_schema={
         "type": "object",
         "properties": {
             "channel_id": {"type": "string"},
             "content": {"type": "string"},
+            "typing_seconds": TYPING_SECONDS_SCHEMA,
             "reply_to_message_id": {
                 "type": "string",
                 "description": "Optional message ID to reply to in this channel",
             },
         },
-        "required": ["channel_id", "content"],
+        "required": ["channel_id", "content", "typing_seconds"],
     },
 )
 async def send_message(arguments: dict):
+    typing_seconds = validate_typing_seconds(arguments.get("typing_seconds"))
     try:
         channel_id = int(arguments["channel_id"])
         content = arguments["content"]
@@ -58,11 +63,11 @@ async def send_message(arguments: dict):
         send_kwargs = build_reply_kwargs(reply_to_message_id, channel_id)
 
         await apply_rate_limit("message")
-        message = await channel.send(content, **send_kwargs)
+        message = await send_with_typing(channel, content, typing_seconds, **send_kwargs)
         return [
             TextContent(
                 type="text",
-                text=f"Message sent to {channel_id} (message_id={message.id})",
+                text=f"Message sent to {channel_id} (message_id={message.id}, typing_seconds={typing_seconds:g})",
             )
         ]
     except Exception as e:
@@ -71,18 +76,20 @@ async def send_message(arguments: dict):
 
 @registry.register(
     name="read_messages",
-    description="Read messages from a channel",
+    description="Read messages with a shared author/role/channel legend. Colours and repeated metadata require details=true.",
     input_schema={
         "type": "object",
         "properties": {
             "channel_id": {"type": "string"},
             "limit": {"type": "integer", "default": 50},
+            "details": DETAILS_SCHEMA,
         },
         "required": ["channel_id"],
     },
 )
 async def read_messages(arguments: dict):
     try:
+        details = detailed_output(arguments)
         channel_id = int(arguments["channel_id"])
         limit = normalize_history_limit(arguments.get("limit"))
         channel = client.get_channel(channel_id)
@@ -101,10 +108,11 @@ async def read_messages(arguments: dict):
 
         await apply_rate_limit("action")
         messages = []
+        formatter = MessageFormatter(details=details, channel_id=channel_id, guild_id=getattr(getattr(channel, "guild", None), "id", None))
         async for msg in channel.history(limit=limit):
-            messages.append(format_message_line(msg))
+            messages.append(formatter.format(msg))
 
-        return [TextContent(type="text", text="\n".join(reversed(messages)))]
+        return [TextContent(type="text", text=formatter.join(list(reversed(messages))))]
     except Exception as e:
         return [TextContent(type="text", text=f"Error reading messages: {str(e)}")]
 
@@ -121,12 +129,14 @@ async def read_messages(arguments: dict):
                 "description": "Text to search for (simple containment)",
             },
             "limit": {"type": "integer", "default": 50},
+            "details": DETAILS_SCHEMA,
         },
         "required": ["channel_id", "query"],
     },
 )
 async def search_messages(arguments: dict):
     try:
+        details = detailed_output(arguments)
         channel_id = int(arguments["channel_id"])
         query = arguments["query"].lower()
         limit = normalize_history_limit(arguments.get("limit"))
@@ -147,13 +157,14 @@ async def search_messages(arguments: dict):
 
         await apply_rate_limit("action")
         messages = []
+        formatter = MessageFormatter(details=details, channel_id=channel_id, guild_id=getattr(getattr(channel, "guild", None), "id", None))
         # Basic filtering using history since standard search API is not always reliable in selfbots without indexing
         async for msg in channel.history(limit=min(limit * 2, limit + 100)):
             # Search in content, embeds, and attachment metadata
             search_text = build_search_text(msg)
 
             if query in search_text:
-                messages.append(format_message_line(msg))
+                messages.append(formatter.format(msg))
                 if len(messages) >= limit:
                     break
 
@@ -168,7 +179,7 @@ async def search_messages(arguments: dict):
                 )
             ]
 
-        return [TextContent(type="text", text="\n".join(reversed(messages)))]
+        return [TextContent(type="text", text=formatter.join(list(reversed(messages))))]
     except Exception as e:
         return [TextContent(type="text", text=f"Error searching messages: {str(e)}")]
 
