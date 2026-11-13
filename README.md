@@ -25,7 +25,7 @@
 
 Fork of [Microck/discord.py-self-mcp](https://github.com/Microck/discord.py-self-mcp)
 with indexed and batch search, reply context, forum search, saved accounts and
-switching, mutual friends/servers, verified membership, required typing duration
+switching, mutual friends/servers, verified membership, member name search, required typing duration
 and compact message output. Saved accounts use Windows DPAPI.
 
 [Инструкция на русском](README-FORK-RU.md)
@@ -44,6 +44,13 @@ args: -m discord_py_self_mcp.main and a DISCORD_TOKEN environment variable.
 The saved profile selected through switch_account is reused on future starts.
 The npm package and release links below refer to the upstream project.
 This fork has not been published as a separate npm package.
+
+`search_guild_members(guild_id, query)` discovers current members by username,
+global name or server nickname without searching message history. Name comparison
+ignores case and punctuation; bounded Gateway prefix queries can discover dotted
+usernames from a dotless query. Matching cache candidates are verified together,
+with no per-member HTTP calls. Discovery is partial, so no matches never proves
+absence. Use `get_guild_member` when the user ID is known.
 
 ## quick start
 

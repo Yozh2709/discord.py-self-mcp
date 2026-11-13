@@ -15,6 +15,7 @@ from . import threads as threads
 from . import reactions as reactions
 from . import members as members
 from . import member_lookup as member_lookup
+from . import member_search as member_search
 from . import mutuals as mutuals
 from . import roles as roles
 from . import permissions as permissions
